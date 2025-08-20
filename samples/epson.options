@@ -1,0 +1,49 @@
+# Filename convention: <scanner device name>.options (located in the same folder as batch-ocr)
+
+# ALL of the following fields MUST be present for each definition:
+
+# <alias>,<option>,<type>,<data>,<default>,<label>
+
+# alias - generic name for option, e.g. gamma
+# option - actual option returned by scanimage -A -d <device>, e.g. analog-gamma
+# type - one of 'value', 'range' or 'list'
+# data - a value, range or list, e.g. 8, -100..100, 75|100|150|200|300|600
+# default - the default value within a range or list
+# label - the label for the Zenity control that sets or selects an option parameter
+
+# Fields MUST be separated by the ':' character.
+# List items MUST be separated by the '|' character.
+# Ranges MUST be specified thus: <min_value>..<max_value>
+
+# If an option with an alias of resolution, mode, gamma, brightness or contrast
+# is defined here, it will override the default behaviour of batch-ocr:
+
+# 1. After a scanner is selected, parse scanimage -A -d <device> output for typical
+#    airscan/escl options that set resolution, mode, gamma, brightness and contrast
+
+# 2. If any options go undetected, instead of applying them as scanimage options,
+#    apply them as ImageMagick convert options.
+
+# No Epson scanner was available for testing. The following suppositions are based on 
+# 'Ubuntu Manpage: sane-epson2 - SANE backend for EPSON scanners'
+# Adapt to suit your actualities.
+
+resolution:resolution:list:100|200|300|600:300:Resolution
+mode:mode:list:Color|Gray:Color:Mode
+gamma:gamma-correction:list:Default|User defined|High density printing|Low density printing|High contrast printing:Default:Gamma
+brightness:brightness:range:-3..3:0:Brightness
+
+# The definitions above are represented as standard options of the
+# 'Batch OCR - Scanner options' dialog, whether or not a <scanner device name>.options
+# file is present. It is not intended to extend this dialog but
+# additional definitions here will do so, e.g.
+
+sharpness:sharpness:range:-2..2:0:Sharpness
+depth:depth:value::8:Depth
+
+# If you wish to apply unusual options silently to every scan, and exclude
+# them from the dialog, leave the label field blank, e.g.
+
+# sharpness:sharpness:range:0:-2..2:<blank>
+# depth:depth:value::8:<blank>
+
