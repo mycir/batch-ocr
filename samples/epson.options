@@ -44,6 +44,6 @@ depth:depth:value::8:Depth
 # If you wish to apply unusual options silently to every scan, and exclude
 # them from the dialog, leave the label field blank, e.g.
 
-# sharpness:sharpness:range:0:-2..2:<blank>
-# depth:depth:value::8:<blank>
+# sharpness:sharpness:range:0:-2..2:
+# depth:depth:value::8:
 

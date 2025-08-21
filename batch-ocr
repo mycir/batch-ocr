@@ -754,7 +754,7 @@ ui_show () {
                 zenity --warning --width=400 --icon=dialog-warning \
                     --title="$TITLE_BASE" \
                     --text="Can't open device:\n\n$device\n \
-                    \n- Is device connected?\n- Is dedeclarevice online? \
+                    \n- Is device connected?\n- Is device online? \
                     \n- Is network/WiFi available?" \
                     --ok-label="Try again"
                 echo "$previous_stage"
@@ -1126,7 +1126,7 @@ while true; do
                         --title="$TITLE_BASE" \
                         --text="Can't open device:\n\n$device\n \
                         \nChoose another device or try again. \
-                        \n\t- Is device connected?\n\t- Is dedeclarevice online? \
+                        \n\t- Is device connected?\n\t- Is device online? \
                         \n\t- Is network/WiFi available?" \
                         --cancel-label="Quit" --ok-label="Back"
                     (( ! $? )) && next_stage="$DLG_SCANNER" || next_stage="$QUIT"
