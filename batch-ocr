@@ -20,6 +20,7 @@ declare -a default_options_keys
 declare -A scan_options
 declare -a scanimage_options
 declare -a magick_options
+declare -a options_dlg_controls
 
 index=1
 resume=false
@@ -167,7 +168,7 @@ get_last_scan_info () {
     f=$(find "$1" -maxdepth 1 \
         \( -name "*.tiff" -o -name "*.jpeg" -o -name "*.png" -o -name "*.pnm" \) \
         -exec basename {} \; | sort -hr | head -1)
-    if (( ! $? )) ; then
+    if [[ -n $f ]] ; then
         no_prefix=${f#"${job_settings[prefix]}-"}
         i=${no_prefix%%[-|\.]*}
         i=$((10#$i))
@@ -179,8 +180,8 @@ set_default_job_settings () {
     job_settings[prefix]=scan
     job_settings[suffix]="Index number"
     job_settings[images_type]=tiff
-    job_settings[rotation]=-90
-    job_settings[split_pages]=true
+    job_settings[rotation]=0
+    job_settings[split_pages]=false
     job_settings[pdf_output]="Combined PDF"
     job_settings[text_output]=None
     job_settings[hocr_output]=None
@@ -218,9 +219,9 @@ read_scan_options () {
         scan_options["$k"]=$(get_scan_option "$k" "default")
     done
     if ! [[ -v default_options[mode] ]] ; then
-        default_options[mode]=":list:HSL|Gray:HSL:Mode"
+        default_options[mode]=":list:HSL|Gray:Gray:Mode"
         default_options_keys+=("mode")
-        scan_options[mode]="HSL"
+        scan_options[mode]="Gray"
     fi
     if ! [[ -v default_options[gamma] ]] ; then
         default_options[gamma]=":range:0.8..2.3:1.0:Gamma"
@@ -248,7 +249,7 @@ fetch_scan_settings () {
     fi    
     if [ -v f ] ; then
         while IFS='=' read -r k v; do
-            [ -n "$v" ] && scan_options["$k"]="$v"
+            [[ -n $v ]] && scan_options["$k"]="$v"
         done  < <(cat "$f")
     elif [ -e ~/.sane/xsane ]; then
         read -r -a sets \
@@ -256,6 +257,7 @@ fetch_scan_settings () {
         for i in "${!sets[@]}" ; do
             k=${sets[$i]%%=*}
             v=${sets[$i]##*=}
+            v=${v//\"/}
             scan_options["$k"]=$v
         done
     fi
@@ -303,9 +305,11 @@ add_command_option () {
 }
 
 sanitise () {
-    echo "$1" | \
+    value=$(echo "$1" | \
         awk '/^-/ { minus="-" } { gsub(/[^0-9.]/,"") ; len = split($0, a, ".")
-            if (len == 1) print ; else printf "%s%s.%s", minus, a[1], a[2] }' -
+            if (len == 1) printf "%s%s", minus, $0
+            else printf "%s%s.%s", minus, a[1], a[2] }' -)
+    [[ $value =~ [0-9]+([.][0-9]+)? ]] && echo "$value" || echo 0
 }
 
 space_chars () {
@@ -328,8 +332,8 @@ prepare_dialog () {
     local sequence
     # if Wayland and GDK_BACKEND=x11, first few keys sent may be lost,
     # so send a few do nothing keys
-    ! [[ -v BOCR_XDOTOOL_DELAY ]] && sequence="key ctrl ctrl ctrl " ||
-        sequence="key --delay $BOCR_XDOTOOL_DELAY ctrl ctrl ctrl " 
+    ! [[ -v BOCR_XDOTOOL_DELAY ]] && sequence="key ctrl ctrl ctrl " || \
+        sequence="key --delay $BOCR_XDOTOOL_DELAY ctrl ctrl ctrl "
     case "$1" in
         "$DLG_FILEBASE")
             sequence+="$(space_chars "${job_settings[prefix]}") Tab Tab \
@@ -374,10 +378,14 @@ prepare_dialog () {
 }
 
 build_combo_values () {
-    cv="$2|${1/$2/}"
-    cv="${cv/||/|}"
-    cv=${cv%|} 
-    echo "$cv"
+    IFS='|' read -r -a items <<<"$1"
+    cv="$2|"
+    for (( i=0; i < ${#items[@]}; i++)); do
+    if [ "${items[$i]}" != "$2" ]; then
+        cv+="${items[$i]}|"
+    fi
+    done
+    echo "${cv%|}"
 }
 
 build_combo_langs () {
@@ -560,402 +568,37 @@ convert_pdfs () {
 }
 
 build_options_dialog () {
-    controls=(--add-combo="Rotation")
+    options_dlg_controls=(--add-combo="Rotation")
     cv=$(build_combo_values "-90|0|90" "${job_settings[rotation]}")
-    controls+=(--combo-values="$cv")
-    controls+=(--add-combo="Split pages")
+    options_dlg_controls+=(--combo-values="$cv")
+    options_dlg_controls+=(--add-combo="Split pages")
     ${job_settings[split_pages]} && cv="Yes|No" || cv="No|Yes"
-    controls+=(--combo-values="$cv")
+    options_dlg_controls+=(--combo-values="$cv")
     for opt in "${default_options_keys[@]}" ; do
         IFS=':' read -r _ type data _ label < <(echo "${default_options["$opt"]}")
         if [[ $label != "" ]] ; then
             case $type in
                 "value"|"range")
-                    controls+=(--add-entry="$label")
+                    options_dlg_controls+=(--add-entry="$label")
                 ;;
                 "list")
                     item=${scan_options["$opt"]}
                     cv=$(build_combo_values "$data" "$item")
-                    controls+=(--add-combo="$label")
-                    controls+=(--combo-values="$cv")
+                    options_dlg_controls+=(--add-combo="$label")
+                    options_dlg_controls+=(--combo-values="$cv")
                 ;;
             esac
         fi
     done
-    controls+=(--add-combo="Save scan settings?")
+    options_dlg_controls+=(--add-combo="Save scan settings?")
     job="Only for this job"
-    global="For all jobs"
+    save_scan_settings="For all jobs"
     case ${job_settings[save_scan_settings]} in
-        No*) cv="No|$job|$global" ;;
-        Only*) cv="$job|$global|No" ;;
-        For*) cv="$global|$job|No" ;;
+        No*) cv="No|$job|$save_scan_settings" ;;
+        Only*) cv="$job|$save_scan_settings|No" ;;
+        For*) cv="$save_scan_settings|$job|No" ;;
     esac
-    controls+=(--combo-values="$cv")
-}
-
-ui_show () {
-    local options
-    case $1 in
-        "$DLG_SCANNER")
-            # for the sake of Wayland and GDK_BACKEND=x11, prepare_dialog sends a
-            # few do nothing keys to trigger the 'Allow Remote Interaction' dialog
-            ( arrange_window zenity "$TITLE_BASE"; prepare_dialog ) &
-            device_list=$(scanimage -f %m\|%t\|%d%n | tr '|' '\n' | zenity --list \
-                --width=800 --height 400 \
-                --title="$TITLE_BASE" --text="Select scanner:" \
-                --column="Name" --column="Type" --column="Device" \
-                --print-column=1,3 --cancel-label="Quit")
-            if (( ! $? )) ; then
-                name=${device_list%|*};device=${device_list#*|}
-                echo "$DLG_FILESDIR" "$device|$name"
-            else
-                echo "$QUIT"
-            fi
-            ;;
-        "$DLG_FILESDIR")
-            arrange_window zenity "$TITLE_BASE" &
-            value=$(zenity --file-selection --directory --filename="$HOME" \
-                --title="$TITLE_BASE - Choose output folder")
-            if (( ! $? )) ; then
-                echo "$DLG_FILEBASE" "$value"
-            else
-                echo "$QUIT"
-            fi
-            ;;
-        "$DLG_RESUME")
-            title="$TITLE_BASE - Resume job"
-            text1="Output folder: ${job_settings[output_dir]}\n\n"
-            text2="Batch OCR found a previous job in this folder.\n"
-            text3="Do you wish to resume it or wipe all files in this folder?\n\n"
-            text4="Leave 'Index numbers start value' blank to resume at\n"
-            text5="last value or enter a new value to overwrite any previous \n"
-            text6="scans with this and successive index numbers.\n"
-            arrange_window zenity "title" &
-            value=$(zenity --forms --title="$title" \
-                --text="$text1$text2$text3$text4$text5$text6" \
-                --add-entry="Index numbers start value" \
-                --cancel-label="Quit" --ok-label="Resume" \
-                --extra-button="Wipe" --extra-button="Back")
-            if (( ! $? )) ; then
-                [ -z "$value" ] && value=-1
-                echo "$DLG_READYQ" "$value"
-            elif [ "$value" = "Wipe" ] ; then
-                echo "$DLG_FILEBASE" "$value"
-            elif [ "$value" = "Back" ] ; then
-                echo "$DLG_FILESDIR"
-            else
-                echo "$QUIT"
-            fi
-            ;;
-        "$DLG_FILEBASE")
-            title="$TITLE_BASE - Output file options"
-            ( arrange_window zenity "$title"; prepare_dialog "$1" "$title" ) &
-            text1="  Edit and select options.\n\n"
-            text2="  Filename with suffix examples:\n"
-            text3="  scan-0001.tiff\n\  scan-0001-20250408-090316.jpeg\n"
-            suffix_cvs=$(build_combo_values \
-                            "Index number|Datetime and index number" \
-                            "${job_settings[suffix]}")
-            type_cvs=$(build_combo_values \
-                        "tiff|jpeg|png|pnm" \
-                        "${job_settings[images_type]}")
-            pdf_cvs=$(build_combo_values \
-                        "Individual PDFs|Combined PDF|None" \
-                        "${job_settings[pdf_output]}")
-            text_cvs=$(build_combo_values \
-                        "Individual text files|Combined text file|None" \
-                        "${job_settings[text_output]}")
-            hocr_cvs=$(build_combo_values \
-                        "Individual HOCR files|None" \
-                        "${job_settings[hocr_output]}")
-            layout_cvs=$(build_combo_values \
-                            "Auto|Column" "${job_settings[ocr_layout]}")
-            value=$(zenity --forms --title="$title" \
-                --text="$text1$text2$text3" --separator=":" \
-                --add-entry="Image file prefix                 " \
-                --add-combo="Image file suffix" \
-                --combo-values="$suffix_cvs" \
-                --add-entry="Index numbers start value" \
-                --add-combo="Image file type" \
-                --combo-values="$type_cvs" \
-                --add-combo="PDF output" \
-                --combo-values="$pdf_cvs" \
-                --add-combo="Text output" \
-                --combo-values="$text_cvs" \
-                --add-combo="HOCR output" \
-                --combo-values="$hocr_cvs" \
-                --add-combo="OCR language" \
-                --combo-values="$(build_combo_langs)" \
-                --add-combo="OCR layout mode" \
-                --combo-values="$layout_cvs" \
-                --add-combo="PDF page size" \
-                --combo-values="$(build_combo_page_sizes)" \
-                --cancel-label="Quit" --extra-button="Back")
-            if (( ! $? )) ; then
-                echo "$DLG_OPTIONS" "$value"
-            elif [ "$value" = "Back" ] ; then
-                echo "$DLG_FILESDIR"
-            else
-                echo "$QUIT"
-            fi
-            ;;
-        "$DLG_OPTIONS")
-            title="$TITLE_BASE - Options"
-            declare -a controls
-            build_options_dialog
-            if ! $resume ; then
-                next_dlg=$DLG_SCANNING
-                ok_button="Scan"
-            else
-                next_dlg=$DLG_READYQ
-                ok_button="OK"
-            fi
-            ( arrange_window zenity "$title"; prepare_dialog "$1" "$title" ) &
-            value=$(zenity --forms --width=400 --separator=: --title="$title" \
-                --text="Select or enter options as required." "${controls[@]}" \
-                --cancel-label="Quit" --ok-label="$ok_button" --extra-button="Back")
-            if (( ! $? )) ; then
-                echo "$next_dlg" "$value"
-            elif [ "$value" = "Back" ] ; then
-                echo "$DLG_FILEBASE"
-            else
-                echo "$QUIT"
-            fi
-            ;;
-        "$DLG_READYQ")
-            title="$TITLE_BASE - Scan"
-            ocr_option=""
-            if $resume ; then
-                ocr_option="--extra-button=OCR"
-            fi
-            arrange_window zenity "$title" &
-            clicked=$(zenity --info --title="$title" --text="Ready to scan?" \
-                --ok-label="Quit" --extra-button="Scan" \
-                $ocr_option --extra-button="Back")
-            case "$clicked" in
-                Scan*)
-                    echo "$DLG_SCANNING"
-                    ;;
-                Back)
-                    echo "$DLG_OPTIONS"
-                    ;;
-                OCR)
-                    echo "$DLG_OCR"
-                    ;;
-                *)
-                    echo "$QUIT"
-                    ;;
-            esac
-            ;;
-        "$DLG_SCANNING")
-            arrange_window zenity "$TITLE_BASE" &
-            scanimage -n -d "$device" --format=pnm
-            if (( $? )) ; then
-                zenity --warning --width=400 --icon=dialog-warning \
-                    --title="$TITLE_BASE" \
-                    --text="Can't open device:\n\n$device\n \
-                    \n- Is device connected?\n- Is device online? \
-                    \n- Is network/WiFi available?" \
-                    --ok-label="Try again"
-                echo "$previous_stage"
-            else
-                arrange_window zenity "$TITLE_BASE" &
-                scanimage -d "$device" "${scanimage_options[@]}" -p --format=pnm \
-                    -o "${job_settings[output_dir]}"/tmp/scan.pnm |& tr '\r' '\n' | \
-                    awk '/Progress:/ {
-                        gsub(/%/, "", $2)
-                        print $2
-                        # only for test backend
-                        system("sleep 0.002")
-                    }' | zenity --progress --title="$TITLE_BASE" \
-                        --text "Scanning" --percentage=0 --auto-close
-                echo "$DLG_CONVERT" 
-            fi
-            ;;
-        "$DLG_CONVERT")
-            coproc convert_dlg { zenity --progress --pulsate \
-                --no-cancel --auto-close \
-                --title="$TITLE_BASE" \
-                --text="Converting scan..." ; }
-            arrange_window zenity "$TITLE_BASE"
-            (( ${#magick_options[@]} )) &&
-                $convert "${job_settings[output_dir]}"/tmp/scan.pnm "${magick_options[@]}" \
-                    "${job_settings[output_dir]}"/tmp/scan.pnm
-            read -r w h < <(identify -format "%w %h" \
-                "${job_settings[output_dir]}"/tmp/scan.pnm)
-            (( job_settings[rotation] )) && read -r w h <<<"$h $w"
-            inc=$(( h / 10 + (h % 10 > 5) ))   
-            for (( i=inc; i < h; i=i+inc )) ; do x_axes+=(-draw "line 0,$i,$w,$i") ; done
-            inc=$(( w / 10 + (w % 10 > 5) ))   
-            for (( i=inc; i < w; i=i+inc )) ; do y_axes+=(-draw "line $i,0,$i,$h") ; done
-            $convert "${job_settings[output_dir]}"/tmp/scan.pnm \
-                -rotate "${job_settings[rotation]}" -bordercolor red -border 2x2 \
-                -stroke red -strokewidth 2 "${x_axes[@]}" "${y_axes[@]}" \
-                "${job_settings[output_dir]}"/tmp/scan-grid.png
-            echo 100  >&"${convert_dlg[1]}"
-            $preview && echo "$UI_GRIDVIEW" || echo "$DLG_APPROVE"
-            ;;
-        "$UI_GRIDVIEW")
-            eog --name=batch_ocr -w \
-                "${job_settings[output_dir]}"/tmp/scan-grid.png &> /dev/null &
-            arrange_window batch_ocr.Eog ""
-            echo "$DLG_CROP"            
-            ;;            
-        "$DLG_CROP")
-            title="$TITLE_BASE - Crop page"
-            text="Enter the amounts to crop as percentages."
-            if ${job_settings[split_pages]} ; then
-                coproc crop_dlg { zenity --forms --separator=":" \
-                    --title="${title}s" --text="$text"  \
-                    --add-entry="Left page - left side" \
-                    --add-entry="Left page - spine shadow" \
-                    --add-entry="Right page - spine shadow" \
-                    --add-entry="Right page - right side" \
-                    --add-entry="Top" \
-                    --add-entry="Bottom" \
-                    --cancel-label="Quit" \
-                    --extra-button="Back" ; }
-            else
-                coproc crop_dlg { zenity --forms --separator=":" \
-                    --title="$title" --text="$text"  \
-                    --add-entry="Left side" \
-                    --add-entry="Right side" \
-                    --add-entry="Top" \
-                    --add-entry="Bottom" \
-                    --cancel-label="Quit" \
-                    --extra-button="Back" ; }
-            fi
-            arrange_window "zenity" "$title"
-            [ "${job_settings[crop]}" != ":::::" ] && prepare_dialog "$1" "$title"
-            read -r value <&"${crop_dlg[0]}"
-            case "$value" in
-                *:*)
-                    echo "$DLG_APPROVE" "$value"
-                    ;;
-                Back)
-                    wmctrl -x -c batch_ocr
-                    echo "$DLG_READYQ"
-                    ;;
-                *)
-                    wmctrl -x -c batch_ocr
-                    echo "$QUIT"
-                    ;;
-            esac
-            ;;
-        "$DLG_APPROVE")
-            infile="${job_settings[output_dir]}/tmp/scan.pnm"
-            [[ ${job_settings[suffix]} =~ Datetime ]] &&
-                datetime=$(printf '%(-%Y%m%d-%H%M%S)T\n' "$(stat -c %Y "$infile")") ||
-                datetime=""
-            # shellcheck disable=SC2031
-            index1="-$(printf '%.3i\n' "$index")"
-            # shellcheck disable=SC2031
-            index2="-$(printf '%.3i\n' $((index + 1)))"
-            path_and_prefix="${job_settings[output_dir]}/${job_settings[prefix]}"
-            outfile1="$path_and_prefix$index1$datetime.${job_settings[images_type]}"
-            outfile2="$path_and_prefix$index2$datetime.${job_settings[images_type]}"
-            if ${job_settings[split_pages]} ; then
-                if $resume ; then
-                    rm -f "$path_and_prefix$index1"*.?(tiff|jpeg|png|pnm)
-                    rm -f "$path_and_prefix$index2"*.?(tiff|jpeg|png|pnm)
-                fi
-                file=$(crop_pages "$infile" \
-                    "$outfile1" "$outfile2" "${job_settings[rotation]}")
-            else
-                if $resume ; then
-                    rm -f "$path_and_prefix$index1"*.?(tiff|jpeg|png|pnm)
-                fi
-                file=$(crop_page "$infile" "$outfile1" "${job_settings[rotation]}")
-            fi
-            eog -w --name=batch_ocr "$file" &> /dev/null &
-            while ! wmctrl -x -a batch_ocr ; do sleep 0.1 ; done
-            if $preview ; then
-                b1=true;b2=false
-            else
-                b1=false;b2=true
-            fi
-            arrange_window zenity "$TITLE_BASE" &
-            choice=$(zenity --list --radiolist --hide-header --title="$TITLE_BASE" \
-                --text "Scan next or go back and try different crop values?" \
-                --column="select" --column="preview" \
-                $b1 "Preview next scan and set new crop values" \
-                $b2 "Scan next and use last crop values" \
-                --cancel-label="Quit" --ok-label="Scan" \
-                --extra-button="Back" --extra-button="OCR")
-            if [ "$choice" != "Back" ] ; then
-                save_job_settings
-                case ${job_settings[save_scan_settings]} in
-                    Only*) save_scan_settings "${job_settings[output_dir]}" ;;
-                    For*)
-                        save_scan_settings "$bocr_dir"
-                        save_scan_settings "${job_settings[output_dir]}"
-                    ;;
-                esac
-            fi
-            case "$choice" in
-                Scan*)
-                    echo "$DLG_SCANNING" false
-                    ;;
-                Preview*)
-                    echo "$DLG_SCANNING" true
-                    ;;
-                Back*)
-                    echo "$UI_GRIDVIEW"
-                    ;;
-                OCR*)
-                    wmctrl -x -c batch_ocr
-                    echo "$DLG_OCR"
-                    ;;
-                *)
-                    wmctrl -x -c batch_ocr
-                    echo "$QUIT"
-                    ;;
-            esac
-            ;;
-        "$DLG_OCR")
-            mapfile -t image_files < <(find "${job_settings[output_dir]}" \
-                -name "*.${job_settings[images_type]}" | sort -h)
-            image_count=${#image_files[@]}
-            for key in "${!job_settings[@]}"; do
-                case ${job_settings[$key]} in
-                    Individual*)
-                        configs2indi+="${key%%_*} " ;;
-                    Combined*)
-                        configs2combi+="${key%%_*} " ;;
-                esac
-            done
-            configs2indi=${configs2indi% }
-            configs2combi=${configs2combi% }
-            configs2indi_csv=${configs2indi/ /,}
-            configs2indi_csv=${configs2indi_csv%,}
-            configs2combi_csv=${configs2combi// /,}
-            configs2combi_csv=${configs2combi_csv%,}
-            configs2indi=${configs2indi/text/txt}
-            configs2combi=${configs2combi/text/txt}
-            doc="document"
-            [[ $configs2combi_csv =~ .*, ]] && doc+=s
-            text1="Processing $image_count image files for OCR"
-            mkdir -p "${job_settings[output_dir]:?}/documents"
-            if [ "$configs2indi" != "" ] ; then
-                text2="to individual documents ($configs2indi_csv)"
-                >&2 echo "$text1 $text2"
-                for f in "${image_files[@]}" ; do
-                    echo "$f"
-                done | ocr_exec
-            fi
-            if [ "$configs2combi" != "" ] ; then
-                text2="to combined $doc ($configs2combi_csv)"
-                >&2 echo "$text1 $text2"
-                for f in "${image_files[@]}" ; do
-                    echo "$f"
-                done | ocr_exec_combine
-            fi
-            mv -f "${job_settings[output_dir]}/tmp/"*.?(txt|hocr) \
-                "${job_settings[output_dir]}/documents/" 2>/dev/null
-            echo "$QUIT"
-            ;;
-        *) ;;
-    esac
+    options_dlg_controls+=(--combo-values="$cv")
 }
 
 check_dependencies() {
@@ -1094,6 +737,8 @@ while [ -L "${bocr_path}" ] ; do
         bocr_path="$(dirname "${bocr_path}")/${path}"
 done
 bocr_dir="$(dirname "${bocr_path}")"
+[ -v BOCR_FILEPICKER_START ] && \
+    filepicker_start="$BOCR_FILEPICKER_START" || filepicker_start="$HOME"
 read -r working_area_x working_area_y working_area_width working_area_height \
     < <(wmctrl -d | awk -F'[/= ,x]' '{printf "%s %s %s %s\n", $13, $14, $15, $16; exit}')
 working_area_centre_x=$((working_area_width / 2 + working_area_x))
@@ -1101,25 +746,33 @@ working_area_centre_y=$((working_area_height / 2 + working_area_y))
 ps=$(lpoptions -p "$(lpstat -d | awk -F': ' '{print $2}')" -l 2>/dev/null | \
         awk '/PageSize/ {for(i=1;i<=NF;i++) if ($i ~ /^\*/) \
             {gsub(/\*/, "", $i); print tolower($i)}}')
-[ -n "$ps" ] && job_settings[page_size]=$ps
+[[ -n $ps ]] && job_settings[page_size]=$ps
 set_default_job_settings
 stage=$DLG_SCANNER
 while true; do
-    read -r next_stage value < <(ui_show "$stage")
-    if [ "$value" != "" ] ; then
-        case $stage in
-            "$DLG_SCANNER")
-                device=${value%%|*}
-                name=${value#*|}
+    case $stage in
+        "$DLG_SCANNER")
+            # for the sake of Wayland and GDK_BACKEND=x11, prepare_dialog sends a
+            # few do nothing keys to trigger the 'Allow Remote Interaction' dialog
+            ( arrange_window zenity "$TITLE_BASE"; prepare_dialog ) &
+            device_list=$(scanimage -f %m\|%t\|%d%n | tr '|' '\n' | zenity --list \
+                --width=800 --height 400 \
+                --title="$TITLE_BASE" --text="Select scanner:" \
+                --column="Name" --column="Type" --column="Device" \
+                --print-column=1,3 --cancel-label="Quit")
+            if (( ! $? )) ; then
+                name=${device_list%|*}
+                device=${device_list#*|}
                 options=$(scanimage -A -d "$device" 2>/dev/null)
                 if (( ! $? )) ; then
-                    if ! [ -e "$bocr_dir/${device}.options" ] ; then
-                        read_scan_options "=" \
-                            < <(echo "$options" | awk "$awk_scanner_options" - )
-                    else
+                    if [ -e "$bocr_dir/${device}.options" ] ; then
                         read_scan_options ":" \
                             < <(cat "$bocr_dir/${device}.options" ; echo -e "\n")
+                    else
+                        read_scan_options "=" \
+                            < <(echo "$options" | awk "$awk_scanner_options" -)
                     fi
+                    next_stage="$DLG_FILESDIR"
                 else
                     arrange_window zenity "$TITLE_BASE" &
                     zenity --question --width=400 --icon=dialog-warning \
@@ -1131,67 +784,156 @@ while true; do
                         --cancel-label="Quit" --ok-label="Back"
                     (( ! $? )) && next_stage="$DLG_SCANNER" || next_stage="$QUIT"
                 fi
-                value=""
-                ;;
-            "$DLG_FILESDIR")
-                if [ -e "$value/job-settings" ] ; then
-                    fetch_job_settings "$value/job-settings"
-                    last_scan_info="$(get_last_scan_info "$value")"
-                    if [ -n "${last_scan_info%%:*}" ] ; then
-                        next_stage="$DLG_RESUME"
-                    fi
-                fi
+            else
+                next_stage="$QUIT"
+            fi
+            ;;
+        "$DLG_FILESDIR")
+            arrange_window zenity "$TITLE_BASE" &
+            value=$(zenity --file-selection --filename="$filepicker_start" \
+                --directory --title="$TITLE_BASE - Choose output folder")
+            if (( ! $? )) ; then
+                [ -e "$value/job-settings" ] && fetch_job_settings "$value/job-settings"
                 fetch_scan_settings "$value"
                 [ ! -e "$value/tmp" ] && mkdir "${value:?}/tmp"
-                setting=output_dir
-                ;;
-            "$DLG_RESUME")
-                if [ "$value" = "Wipe" ] ; then
-                    title="$TITLE_BASE - Wipe folder"
-                    text1="This will permanently delete any previously scanned "
-                    text2="images and OCR'd documents from this folder.\n\n"
-                    text3="Are you sure you want to proceed?"
-                    ( arrange_window zenity "$title"; prepare_dialog "$1" ) &
-                    zenity --question --width 350 --height 300 --default-cancel \
-                        --icon dialog-warning --title "$title" \
-                        --text "${job_settings[output_dir]}\n\n$text1$text2$text3"
-                    (( ! $? )) && rm -fr "${job_settings[output_dir]:?}/"* || exit
-                    set_default_job_settings
-                    next_stage=$DLG_FILEBASE
-                    n=1
-                else
-                    resume=true
-                    scanimage_options=()
-                    magick_options=()                    
-                    for (( i=0; i < ${#default_options_keys[@]}; i++)) ; do
-                        key="${default_options_keys[$i]}"
-                        add_command_option "$key" "${scan_options["$key"]}"
-                    done
-                    if [ "$value" -le 0 ] ; then
-                        last_scan_info="$(get_last_scan_info \
-                                            "${job_settings[output_dir]}")"
-                        n=${last_scan_info%%:*}
-                    else
-                        n=$(sanitise "$value")
-                    fi
-                    if ${job_settings[split_pages]} ; then
-                        (( n % 2 == 0 )) && n=$(( n + 1 ))
-                    fi
+                job_settings[output_dir]="$value"
+                filepicker_start="$value"            
+                last_scan_info="$(get_last_scan_info "$value")"
+                [[ -n ${last_scan_info%%:*} ]] && \
+                    next_stage="$DLG_RESUME" || next_stage="$DLG_FILEBASE"
+            else
+                next_stage="$QUIT"
+            fi
+            ;;
+        "$DLG_RESUME")
+            title="$TITLE_BASE - Resume job"
+            text1="Output folder: ${job_settings[output_dir]}\n\n"
+            text2="Batch OCR found a previous job in this folder.\n"
+            text3="Do you wish to resume it or wipe all files in this folder?\n\n"
+            text4="Leave 'Index numbers start value' blank to resume at\n"
+            text5="last value or enter a new value to overwrite any previous \n"
+            text6="scans with this and successive index numbers.\n"
+            arrange_window zenity "title" &
+            value=$(zenity --forms --title="$title" \
+                --text="$text1$text2$text3$text4$text5$text6" \
+                --add-entry="Index numbers start value" \
+                --cancel-label="Quit" --ok-label="Resume" \
+                --extra-button="Wipe" --extra-button="Back")
+            if (( ! $? )) ; then
+                resume=true
+                scanimage_options=()
+                magick_options=()                    
+                for (( i=0; i < ${#default_options_keys[@]}; i++)) ; do
+                    key="${default_options_keys[$i]}"
+                    add_command_option "$key" "${scan_options["$key"]}"
+                done
+                n=$(sanitise "$value")
+                if (( n == 0 )) ; then
+                    last_scan_info="$(get_last_scan_info \
+                                        "${job_settings[output_dir]}")"
+                    n=${last_scan_info%%:*}
+                    (( n++ ))
+                fi
+                if ${job_settings[split_pages]} ; then
+                    (( n % 2 == 0 )) && (( n++ ))
                 fi
                 [ ! -e "${job_settings[output_dir]}/tmp" ] && \
                     mkdir "${job_settings[output_dir]:?}/tmp"
-                index=$n
-                value=""
-                ;;
-            "$DLG_FILEBASE")
+                index=$n                
+                next_stage="$DLG_READYQ"
+            elif [ "$value" = "Wipe" ] ; then
+                title="$TITLE_BASE - Wipe folder"
+                text1="This will permanently delete any previously scanned "
+                text2="images and OCR'd documents from this folder.\n\n"
+                text3="Are you sure you want to proceed?"
+                ( arrange_window zenity "$title"; prepare_dialog "$DLG_RESUME" ) &
+                zenity --question --width 350 --height 300 --default-cancel \
+                    --icon dialog-warning --title "$title" \
+                    --text "${job_settings[output_dir]}\n\n$text1$text2$text3"
+                (( ! $? )) && rm -fr "${job_settings[output_dir]:?}/"* || exit
+                set_default_job_settings
+                next_stage=$DLG_FILEBASE
+                index=1
+            elif [ "$value" = "Back" ] ; then
+                next_stage="$DLG_FILESDIR"
+            else
+                next_stage="$QUIT"
+            fi
+            ;;
+        "$DLG_FILEBASE")
+            title="$TITLE_BASE - Output file options"
+            ( arrange_window zenity "$title"; prepare_dialog "$DLG_FILEBASE" "$title" ) &
+            text1="  Edit and select options.\n\n"
+            text2="  Filename with suffix examples:\n"
+            text3="  scan-0001.tiff\n\  scan-0001-20250408-090316.jpeg\n"
+            suffix_cvs=$(build_combo_values \
+                            "Index number|Datetime and index number" \
+                            "${job_settings[suffix]}")
+            type_cvs=$(build_combo_values \
+                        "tiff|jpeg|png|pnm" \
+                        "${job_settings[images_type]}")
+            pdf_cvs=$(build_combo_values \
+                        "Individual PDFs|Combined PDF|None" \
+                        "${job_settings[pdf_output]}")
+            text_cvs=$(build_combo_values \
+                        "Individual text files|Combined text file|None" \
+                        "${job_settings[text_output]}")
+            hocr_cvs=$(build_combo_values \
+                        "Individual HOCR files|None" \
+                        "${job_settings[hocr_output]}")
+            layout_cvs=$(build_combo_values \
+                            "Auto|Column" "${job_settings[ocr_layout]}")
+            value=$(zenity --forms --title="$title" \
+                --text="$text1$text2$text3" --separator=":" \
+                --add-entry="Image file prefix                 " \
+                --add-combo="Image file suffix" \
+                --combo-values="$suffix_cvs" \
+                --add-entry="Index numbers start value" \
+                --add-combo="Image file type" \
+                --combo-values="$type_cvs" \
+                --add-combo="PDF output" \
+                --combo-values="$pdf_cvs" \
+                --add-combo="Text output" \
+                --combo-values="$text_cvs" \
+                --add-combo="HOCR output" \
+                --combo-values="$hocr_cvs" \
+                --add-combo="OCR language" \
+                --combo-values="$(build_combo_langs)" \
+                --add-combo="OCR layout mode" \
+                --combo-values="$layout_cvs" \
+                --add-combo="PDF page size" \
+                --combo-values="$(build_combo_page_sizes)" \
+                --cancel-label="Quit" --extra-button="Back")
+            if (( ! $? )) ; then
                 IFS=':' read -r job_settings["prefix"] job_settings["suffix"] \
                     index job_settings["images_type"] job_settings["pdf_output"] \
                     job_settings["text_output"] job_settings["hocr_output"] \
                     job_settings["ocr_language"] job_settings["ocr_layout"] \
                     job_settings["page_size"] < <(echo "$value")
-                value=""
-                ;;
-            "$DLG_OPTIONS")
+                index=$(sanitise "$index")
+                [[ $index -le 0 ]] && index=1
+                next_stage="$DLG_OPTIONS"
+            elif [ "$value" = "Back" ] ; then
+                next_stage="$DLG_FILESDIR"
+            else
+                next_stage="$QUIT"
+            fi
+            ;;
+        "$DLG_OPTIONS")
+            title="$TITLE_BASE - Options"
+            build_options_dialog
+            if ! $resume ; then
+                next_dlg=$DLG_SCANNING
+                ok_button="Scan"
+            else
+                next_dlg=$DLG_READYQ
+                ok_button="OK"
+            fi
+            ( arrange_window zenity "$title"; prepare_dialog "$DLG_OPTIONS" "$title" ) &
+            value=$(zenity --forms --width=400 --separator=: --title="$title" \
+                --text="Select or enter options as required." "${options_dlg_controls[@]}" \
+                --cancel-label="Quit" --ok-label="$ok_button" --extra-button="Back")
+            if (( ! $? )) ; then
                 IFS=':' read -r -a opts <<< "$value"
                 job_settings[rotation]=${opts[0]}
                 job_settings[split_pages]=${opts[1]}
@@ -1201,27 +943,253 @@ while true; do
                 scanimage_options=()
                 magick_options=()
                 for (( i=0, j=2; j < ${#opts[@]} - 1; i++, j++ )) ; do
-                    key="${default_options_keys[$i]}"
-                    scan_options["$key"]="${opts[$j]}"
-                    add_command_option "$key" "${opts[$j]}"
-                done
-                value=""
-                ;;
-            "$DLG_CROP")
-                setting=crop
-                ;;
-            "$DLG_APPROVE")
-                if ${job_settings[split_pages]} ; then
-                    index=$((index + 2))
-                else
-                    index=$((index + 1))
+                    k="${default_options_keys[$i]}"
+                    [ "$(get_scan_option "$k" "type")" == "list" ] && \
+                        v="${opts[$j]}" || v=$(sanitise "${opts[$j]}")
+                    scan_options["$k"]="$v"
+                    add_command_option "$k" "$v"
+                done                    
+                next_stage="$next_dlg"
+            elif [ "$value" = "Back" ] ; then
+                next_stage="$DLG_FILEBASE"
+            else
+                next_stage="$QUIT"
+            fi
+            ;;
+        "$DLG_READYQ")
+            title="$TITLE_BASE - Scan"
+            $resume && ocr_button="--extra-button=OCR" || ocr_button=""
+            arrange_window zenity "$title" &
+            value=$(zenity --info --title="$title" --text="Ready to scan?" \
+                --ok-label="Quit" --extra-button="Scan" \
+                "$ocr_button" --extra-button="Back")
+            case "$value" in
+                Scan)
+                    next_stage="$DLG_SCANNING"
+                    ;;
+                Back)
+                    next_stage="$DLG_OPTIONS"
+                    ;;
+                OCR)
+                    next_stage="$DLG_OCR"
+                    ;;
+                *)
+                    next_stage="$QUIT"
+                    ;;
+            esac
+            ;;
+        "$DLG_SCANNING")
+            arrange_window zenity "$TITLE_BASE" &
+            scanimage -n -d "$device" --format=pnm > /dev/null 2>&1
+            if (( $? )) ; then
+                zenity --warning --width=400 --icon=dialog-warning \
+                    --title="$TITLE_BASE" \
+                    --text="Can't open device:\n\n$device\n \
+                    \n- Is device connected?\n- Is device online? \
+                    \n- Is network/WiFi available?" \
+                    --ok-label="Try again"
+                next_stage="$previous_stage"
+            else
+                scanimage -d "$device" "${scanimage_options[@]}" -p --format=pnm \
+                    -o "${job_settings[output_dir]}"/tmp/scan.pnm |& tr '\r' '\n' | \
+                    awk '/Progress:/ {
+                        gsub(/%/, "", $2)
+                        print $2
+                        # only for test backend
+                        system("sleep 0.002")
+                    }' | zenity --progress --title="$TITLE_BASE" \
+                        --text "Scanning" --percentage=0 --auto-close
+                next_stage="$DLG_CONVERT" 
+            fi
+            ;;
+        "$DLG_CONVERT")
+            coproc convert_dlg { zenity --progress --pulsate \
+                --no-cancel --auto-close \
+                --title="$TITLE_BASE" \
+                --text="Converting scan..." ; }
+            arrange_window zenity "$TITLE_BASE"
+            (( ${#magick_options[@]} )) &&
+                $convert "${job_settings[output_dir]}"/tmp/scan.pnm "${magick_options[@]}" \
+                    "${job_settings[output_dir]}"/tmp/scan.pnm
+            read -r w h < <(identify -format "%w %h" \
+                "${job_settings[output_dir]}"/tmp/scan.pnm)
+            (( job_settings[rotation] )) && read -r w h <<<"$h $w"
+            inc=$(( h / 10 + (h % 10 > 5) ))   
+            for (( i=inc; i < h; i=i+inc )) ; do x_axes+=(-draw "line 0,$i,$w,$i") ; done
+            inc=$(( w / 10 + (w % 10 > 5) ))   
+            for (( i=inc; i < w; i=i+inc )) ; do y_axes+=(-draw "line $i,0,$i,$h") ; done
+            $convert "${job_settings[output_dir]}"/tmp/scan.pnm \
+                -rotate "${job_settings[rotation]}" -bordercolor red -border 2x2 \
+                -stroke red -strokewidth 2 "${x_axes[@]}" "${y_axes[@]}" \
+                "${job_settings[output_dir]}"/tmp/scan-grid.png
+            echo 100  >&"${convert_dlg[1]}"
+            $preview && next_stage="$UI_GRIDVIEW" || next_stage="$DLG_APPROVE"
+            ;;
+        "$UI_GRIDVIEW")
+            eog --name=batch_ocr -w \
+                "${job_settings[output_dir]}"/tmp/scan-grid.png &> /dev/null &
+            arrange_window batch_ocr.Eog ""
+            next_stage="$DLG_CROP"            
+            ;; 
+        "$DLG_CROP")
+            title="$TITLE_BASE - Crop page"
+            text="Enter the amounts to crop as percentages."
+            arrange_window "zenity" "$title" &
+            [ "${job_settings[crop]}" != ":::::" ] && prepare_dialog "$DLG_CROP" "$title" &
+            if ${job_settings[split_pages]} ; then
+                value=$(zenity --forms --separator=":" \
+                        --title="${title}s" --text="$text" \
+                        --add-entry="Left page - left side" \
+                        --add-entry="Left page - spine shadow" \
+                        --add-entry="Right page - spine shadow" \
+                        --add-entry="Right page - right side" \
+                        --add-entry="Top" \
+                        --add-entry="Bottom" \
+                        --cancel-label="Quit" \
+                        --extra-button="Back")
+            else
+                value=$(zenity --forms --separator=":" \
+                        --title="$title" --text="$text" \
+                        --add-entry="Left side" \
+                        --add-entry="Right side" \
+                        --add-entry="Top" \
+                        --add-entry="Bottom" \
+                        --cancel-label="Quit" \
+                        --extra-button="Back")
+            fi
+            case "$value" in
+                *:*)
+                    value=$(IFS=':'; for n in $value:; do \
+                        printf "%d:" "$(sanitise "$n" )" 2>/dev/null; done)
+                    job_settings[crop]=${value%*:}
+                    next_stage="$DLG_APPROVE"
+                    ;;
+                Back)
+                    wmctrl -x -c batch_ocr
+                    next_stage="$DLG_READYQ"
+                    ;;
+                *)
+                    wmctrl -x -c batch_ocr
+                    next_stage="$QUIT"
+                    ;;
+            esac
+            ;;
+        "$DLG_APPROVE")
+            infile="${job_settings[output_dir]}/tmp/scan.pnm"
+            [[ ${job_settings[suffix]} =~ Datetime ]] &&
+                datetime=$(printf '%(-%Y%m%d-%H%M%S)T\n' "$(stat -c %Y "$infile")") ||
+                datetime=""
+            # shellcheck disable=SC2031
+            index1="-$(printf '%.3i\n' "$index")"
+            # shellcheck disable=SC2031
+            index2="-$(printf '%.3i\n' $((index + 1)))"
+            path_and_prefix="${job_settings[output_dir]}/${job_settings[prefix]}"
+            outfile1="$path_and_prefix$index1$datetime.${job_settings[images_type]}"
+            outfile2="$path_and_prefix$index2$datetime.${job_settings[images_type]}"
+            if ${job_settings[split_pages]} ; then
+                if $resume ; then
+                    rm -f "$path_and_prefix$index1"*.?(tiff|jpeg|png|pnm)
+                    rm -f "$path_and_prefix$index2"*.?(tiff|jpeg|png|pnm)
                 fi
-                preview=$value
-                value=""
+                file=$(crop_pages "$infile" \
+                    "$outfile1" "$outfile2" "${job_settings[rotation]}")
+            else
+                if $resume ; then
+                    rm -f "$path_and_prefix$index1"*.?(tiff|jpeg|png|pnm)
+                fi
+                file=$(crop_page "$infile" "$outfile1" "${job_settings[rotation]}")
+            fi
+            eog -w --name=batch_ocr "$file" &> /dev/null &
+            while ! wmctrl -x -a batch_ocr ; do sleep 0.1 ; done
+            if $preview ; then
+                b1=true;b2=false
+            else
+                b1=false;b2=true
+            fi
+            arrange_window zenity "$TITLE_BASE" &
+            value=$(zenity --list --radiolist --hide-header --title="$TITLE_BASE" \
+                --text "Scan next or go back and try different crop values?" \
+                --column="select" --column="preview" \
+                $b1 "Preview next scan and set new crop values" \
+                $b2 "Scan next and use last crop values" \
+                --cancel-label="Quit" --ok-label="Scan" \
+                --extra-button="Back" --extra-button="OCR")
+            case "$value" in
+                Scan* | Preview*)
+                    if ${job_settings[split_pages]} ; then
+                        index=$((index + 2))
+                    else
+                        index=$((index + 1))
+                    fi
+                    [[ $value =~ "Scan" ]] && preview=false || preview=true
+                        next_stage="$DLG_SCANNING"
+                    ;;
+                OCR)
+                    wmctrl -x -c batch_ocr
+                    next_stage="$DLG_OCR"
+                    ;;
+                Back)
+                    next_stage="$UI_GRIDVIEW"
+                    ;;
+                *)
+                    wmctrl -x -c batch_ocr
+                    next_stage="$QUIT"
                 ;;
+            esac
+            if [ "$value" != "Back" ] ; then
+                save_job_settings
+                case ${job_settings[save_scan_settings]} in
+                    Only*) save_scan_settings "${job_settings[output_dir]}" ;;
+                    For*)
+                        save_scan_settings "$bocr_dir"
+                        save_scan_settings "${job_settings[output_dir]}"
+                    ;;
+                esac
+            fi
+            ;;
+        "$DLG_OCR")
+            mapfile -t image_files < <(find "${job_settings[output_dir]}" \
+                -name "*.${job_settings[images_type]}" | sort -h)
+            image_count=${#image_files[@]}
+            for key in "${!job_settings[@]}"; do
+                case ${job_settings[$key]} in
+                    Individual*)
+                        configs2indi+="${key%%_*} " ;;
+                    Combined*)
+                        configs2combi+="${key%%_*} " ;;
+                esac
+            done
+            configs2indi=${configs2indi% }
+            configs2combi=${configs2combi% }
+            configs2indi_csv=${configs2indi/ /,}
+            configs2indi_csv=${configs2indi_csv%,}
+            configs2combi_csv=${configs2combi// /,}
+            configs2combi_csv=${configs2combi_csv%,}
+            configs2indi=${configs2indi/text/txt}
+            configs2combi=${configs2combi/text/txt}
+            doc="document"
+            [[ $configs2combi_csv =~ .*, ]] && doc+=s
+            text1="Processing $image_count image files for OCR"
+            mkdir -p "${job_settings[output_dir]:?}/documents"
+            if [ "$configs2indi" != "" ] ; then
+                text2="to individual documents ($configs2indi_csv)"
+                >&2 echo "$text1 $text2"
+                for f in "${image_files[@]}" ; do
+                    echo "$f"
+                done | ocr_exec
+            fi
+            if [ "$configs2combi" != "" ] ; then
+                text2="to combined $doc ($configs2combi_csv)"
+                >&2 echo "$text1 $text2"
+                for f in "${image_files[@]}" ; do
+                    echo "$f"
+                done | ocr_exec_combine
+            fi
+            mv -f "${job_settings[output_dir]}/tmp/"*.?(txt|hocr) \
+                "${job_settings[output_dir]}/documents/" 2>/dev/null
+            next_stage="$QUIT"
+            ;;
         esac
-        [ "$value" != "" ] && job_settings[$setting]="$value"
-    fi
     [[ $BOCR_DEBUG = 1 ]] && print_debug_info
     if [ "$next_stage" = "$QUIT" ] ; then
         [[ $stage -gt $DLG_FILESDIR ]] && \

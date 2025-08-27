@@ -22,10 +22,17 @@ In the case of text file output, setting 'OCR layout mode' to column applies a r
 There is some limited sanitisation of user typos (strip alpha characters from numeric fields) but don't expect miracles.
 
 Zenity doesn't allow for presetting control selections or text. With Zenity combos, this is achieved by shuffling the current option to the top of combo values to be displayed. For 'entry', i.e. edit controls, these are filled by sending keys from xdotool - not pretty and sensitive to system specs. If values aren't filled in correctly  from 'job_settings', or focus doesn't return to first control in dialog, increase the delay allowed for combo animation thus:</br>
-```BOCR_COMBO_DELAY=<seconds/10> ./batch-ocr```
+```BOCR_XDOTOOL_DELAY=<milliseconds> ./batch-ocr```
+
+The Zenity filepicker for the output folder defaults to $HOME. To change:</br>
+```BOCR_FILEPICKER_START="<path to scans>" ./batch-ocr```
 
 If modifying the script, some debug information can be displayed to stdout thus:</br>
 ```BOCR_DEBUG_INFO=1 ./batch-ocr```
+
+These environment variables can be combined, e.g.</br>
+```BOCR_XDOTOOL_DELAY=20 BOCR_FILEPICKER_START="$HOME/Scans" BOCR_DEBUG_INFO=1 ./batch-ocr```
+
 
 ## Dependencies
 
