@@ -837,8 +837,6 @@ while true; do
                 if ${job_settings[split_pages]} ; then
                     (( n % 2 == 0 )) && (( n++ ))
                 fi
-                [ ! -e "${job_settings[output_dir]}/tmp" ] && \
-                    mkdir "${job_settings[output_dir]:?}/tmp"
                 index=$n                
                 next_stage="$DLG_READYQ"
             elif [ "$value" = "Wipe" ] ; then
@@ -850,7 +848,7 @@ while true; do
                 zenity --question --width 350 --height 300 --default-cancel \
                     --icon dialog-warning --title "$title" \
                     --text "${job_settings[output_dir]}\n\n$text1$text2$text3"
-                (( ! $? )) && rm -fr "${job_settings[output_dir]:?}/"* || exit
+                (( ! $? )) && rm -fr "${job_settings[output_dir]:?}/"!(tmp) || exit
                 set_default_job_settings
                 next_stage=$DLG_FILEBASE
                 index=1
